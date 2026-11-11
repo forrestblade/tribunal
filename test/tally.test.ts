@@ -2,8 +2,20 @@ import { describe, expect, it } from "vitest";
 import { decide, meets, type Requirement } from "../src/engine/tally.js";
 import { shareMet } from "../src/policy.js";
 
-const req = (r: Partial<Requirement> = {}): Requirement => ({ yes: 4, share: "two-thirds", witnessYes: 0, closeOnThreshold: false, ...r });
-const count = (yes: number, no: number, remaining: number, witnessYes = 0, witnessRemaining = 0) => ({ yes, no, remaining, witnessYes, witnessRemaining });
+const req = (r: Partial<Requirement> = {}): Requirement => ({
+  yes: 4,
+  share: "two-thirds",
+  witnessYes: 0,
+  closeOnThreshold: false,
+  ...r,
+});
+const count = (yes: number, no: number, remaining: number, witnessYes = 0, witnessRemaining = 0) => ({
+  yes,
+  no,
+  remaining,
+  witnessYes,
+  witnessRemaining,
+});
 
 describe("shareMet", () => {
   it("majority is strictly more yes than no", () => {

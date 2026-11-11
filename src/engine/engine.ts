@@ -1,6 +1,15 @@
+import { plural, when } from "../format.js";
 import { findStep, stepsFor, type Policy, type Step, type Track } from "../policy.js";
 import type { Store } from "../store.js";
-import { laneOf, type CaseRecord, type Evidence, type Lane, type NewCase, type VoteRecord, type VoteValue } from "../types.js";
+import {
+  laneOf,
+  type CaseRecord,
+  type Evidence,
+  type Lane,
+  type NewCase,
+  type VoteRecord,
+  type VoteValue,
+} from "../types.js";
 import { currentLevel, highestAllowedStep, stepAllowed } from "./ladder.js";
 import { decide, type Count, type Decision, type Requirement } from "./tally.js";
 import { witnessesOf } from "./witness.js";
@@ -9,19 +18,22 @@ const MIN = 60_000;
 const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
 
-/** What the engine needs to know about a server member. Built from Discord by the adapter. */
+const BREAKER_KEY = "breakerPausedUntil";
+
+/** What the engine needs to know about a server member. The Discord adapter builds these. */
 export interface MemberInfo {
   id: string;
   name: string;
   isBot: boolean;
-  /** Server owner, administrators, and anyone the bot's role cannot act on. */
+  /** Owner, administrators, and anyone whose top role is above the bot's: Discord will not let the bot act on them. */
   immune: boolean;
-  /** When they joined the server this time, from Discord. */
+  /** When they joined this time, from Discord. The store remembers the earliest sighting. */
   joinedAt: number | null;
   timedOutUntil: number | null;
   voiceChannelId: string | null;
 }
 
+/** Something the Discord adapter must do because a case passed. */
 export type Effect =
   | { type: "cooloff"; userId: string; minutes: number }
   | { type: "warn"; userId: string }
@@ -37,10 +49,11 @@ export interface Settled {
   effects: Effect[];
 }
 
-export type Result<T> = { ok: true; value: T } | { ok: false; reason: string; breakerTripped?: boolean };
+export type Refusal = { ok: false; reason: string; breakerTripped?: boolean };
+export type Result<T> = { ok: true; value: T } | Refusal;
 
 const ok = <T>(value: T): Result<T> => ({ ok: true, value });
-const no = (reason: string, breakerTripped = false): Result<never> => ({ ok: false, reason, breakerTripped });
+const refuse = (reason: string): Refusal => ({ ok: false, reason });
 
 export interface SanctionInput {
   proposer: MemberInfo;
@@ -48,7 +61,7 @@ export interface SanctionInput {
   stepId: string;
   rule: string | null;
   reason: string;
-  /** "auto": treat as voice if the target is in a voice channel right now. */
+  /** "auto" means: a voice case if the target is in a voice channel right now. */
   voice: boolean | "auto";
   evidence: Evidence | null;
   members: MemberInfo[];
@@ -72,6 +85,7 @@ export interface AppealInput {
 export interface VoteOutcome {
   case: CaseRecord;
   previous: VoteValue | null;
+  /** Set when this vote decided the case. */
   settled: Settled | null;
 }
 
@@ -80,12 +94,31 @@ export interface Tally extends Count {
   decision: Decision;
 }
 
-const BREAKER_KEY = "breakerPausedUntil";
+export interface MemberRecord {
+  level: number;
+  strikes: { caseId: number; stepId: string | null; level: number; endsAt: number | null }[];
+  ban: { caseId: number; until: number | null } | null;
+  /** Ladder steps a case against this person could ask for right now. */
+  canBeProposed: Step[];
+}
+
+/** The fields every kind of case shares once the guards have passed. */
+interface Draft {
+  kind: CaseRecord["kind"];
+  proposerId: string;
+  accused: string[];
+  reason: string;
+  requirement: Requirement;
+  windowMinutes: number;
+  witnesses?: string[];
+  extra?: Partial<NewCase>;
+}
 
 /**
- * The rules engine. Synchronous on purpose: every check-and-write happens in
- * one SQLite transaction, so two clicks arriving together cannot both close a
- * case or both file one. The Discord side applies the returned effects.
+ * The rules. Synchronous on purpose: each public method does its checks and
+ * writes inside one SQLite transaction, so two clicks arriving together cannot
+ * both close a case or both file one. It never touches Discord; it returns
+ * effects for the adapter to apply.
  */
 export class Engine {
   constructor(
@@ -95,14 +128,13 @@ export class Engine {
     readonly now: () => number = Date.now,
   ) {}
 
-  // People ----------------------------------------------------------------
+  // People ------------------------------------------------------------------
 
   /** Days since we first saw them in the server. Rejoining does not reset this. */
   memberAgeDays(m: MemberInfo): number {
-    const seen = this.store.firstSeen(m.id);
-    const candidates = [seen, m.joinedAt].filter((v): v is number => v !== null);
-    if (candidates.length === 0) return 0;
-    return (this.now() - Math.min(...candidates)) / DAY;
+    const sightings = [this.store.firstSeen(m.id), m.joinedAt].filter((v): v is number => v !== null);
+    if (sightings.length === 0) return 0;
+    return (this.now() - Math.min(...sightings)) / DAY;
   }
 
   isMember(m: MemberInfo): boolean {
@@ -119,13 +151,32 @@ export class Engine {
 
   /** Steps a case against this person may ask for right now, for menus. */
   allowedSteps(target: MemberInfo): Step[] {
-    const track = this.trackOf(target);
-    if (track === "newcomer") return this.policy.newcomerSteps;
+    if (this.trackOf(target) === "newcomer") return this.policy.newcomerSteps;
     const level = this.level(target.id);
     return this.policy.memberSteps.filter((s) => stepAllowed(s, level));
   }
 
-  private timedOut(m: MemberInfo): boolean {
+  record(userId: string, info: MemberInfo | null): MemberRecord {
+    const ban = this.store.activeBan(userId, this.shadow);
+    return {
+      level: this.level(userId),
+      strikes: this.store.strikes(userId, this.shadow).map((s) => ({
+        caseId: s.caseId,
+        stepId: this.store.getCase(s.caseId)?.stepId ?? null,
+        level: s.level,
+        endsAt: s.endsAt,
+      })),
+      ban: ban ? { caseId: ban.caseId, until: ban.until } : null,
+      canBeProposed: info ? this.allowedSteps(info).filter((s) => s.level !== null) : [],
+    };
+  }
+
+  /** Banned users an appeal could be filed for, newest first. */
+  appealable(): { userId: string; caseId: number; until: number | null }[] {
+    return this.store.activeBans(this.shadow).map((b) => ({ userId: b.userId, caseId: b.caseId, until: b.until }));
+  }
+
+  private isTimedOut(m: MemberInfo): boolean {
     return m.timedOutUntil !== null && m.timedOutUntil > this.now();
   }
 
@@ -134,7 +185,7 @@ export class Engine {
     return c.partyBId ? [c.targetId, c.partyBId] : [c.targetId];
   }
 
-  /** Whether voter and accused were on opposite sides of a recent case, or both parties to a no-contact case. */
+  /** Whether two people were on opposite sides of a case recently, or both parties to a no-contact case. */
   private involved(voterId: string, accusedId: string, recent: CaseRecord[]): boolean {
     return recent.some((c) => {
       const accused = this.accusedOf(c);
@@ -144,49 +195,67 @@ export class Engine {
     });
   }
 
-  private electorate(members: MemberInfo[], exclude: string[], accused: string[]): string[] {
+  /** Everyone who may vote on a case about `accused`, frozen at filing time. */
+  private electorate(members: MemberInfo[], proposerId: string, accused: string[]): string[] {
     const recent = this.store.casesSince(this.now() - this.policy.involvementDays * DAY);
+    const excluded = new Set([proposerId, ...accused]);
     return members
-      .filter((m) => this.isMember(m) && !this.timedOut(m) && !exclude.includes(m.id))
+      .filter((m) => this.isMember(m) && !this.isTimedOut(m) && !excluded.has(m.id))
       .filter((m) => !accused.some((a) => this.involved(m.id, a, recent)))
       .map((m) => m.id);
   }
 
-  // Shared checks -----------------------------------------------------------
+  // Filing guards -----------------------------------------------------------
 
-  private checkProposer(p: MemberInfo): string | null {
-    if (p.isBot) return "Bots can't file cases.";
-    if (!this.isMember(p)) return `You can file cases once you've been in the server ${this.policy.memberMinDays} days.`;
-    if (this.timedOut(p)) return "You can't file cases while you're timed out.";
+  private checkFilingOpen(proposer: MemberInfo): string | null {
+    const pausedUntil = this.breakerPausedUntil();
+    if (pausedUntil) {
+      return `Too many cases were filed in the last hour, so new cases are paused until ${when(pausedUntil, "t")}.`;
+    }
+    if (proposer.isBot) return "Bots can't file cases.";
+    if (!this.isMember(proposer)) {
+      return `You can file cases once you've been in the server ${this.policy.memberMinDays} days.`;
+    }
+    if (this.isTimedOut(proposer)) return "You can't file cases while you're timed out.";
     return null;
   }
 
-  private checkBreaker(): string | null {
-    const until = Number(this.store.getState(BREAKER_KEY) ?? 0);
-    if (until > this.now()) return `Too many cases were filed in the last hour, so new cases are paused until <t:${Math.ceil(until / 1000)}:t>.`;
+  private checkActionable(m: MemberInfo, what: string): string | null {
+    if (m.isBot) return `Bots can't ${what}.`;
+    if (m.immune) return `${m.name} is the owner, an admin, or ranks above the bot, so the bot can't act on them.`;
     return null;
   }
 
-  /** Trip the breaker if this filing would go over the hourly limit. */
-  private tripBreaker(): boolean {
-    const lastHour = this.store.casesSince(this.now() - HOUR).length;
-    if (lastHour < this.policy.breaker.maxCasesPerHour) return false;
-    this.store.setState(BREAKER_KEY, String(this.now() + this.policy.breaker.pauseMinutes * MIN));
-    return true;
+  private checkLaneFree(lane: Lane, accused: string[], proposerId: string): string | null {
+    const open = this.store.openCases().filter((c) => laneOf(c) === lane);
+    const aboutThem = open.find((c) => this.accusedOf(c).some((id) => accused.includes(id)));
+    if (aboutThem) return `There's already an open case about them (case #${aboutThem.id}). Vote on that one.`;
+    const mine = open.find((c) => c.proposerId === proposerId);
+    if (mine) return `You already have an open case (case #${mine.id}). Wait for it to close.`;
+    return null;
   }
 
-  breakerPausedUntil(): number | null {
-    const until = Number(this.store.getState(BREAKER_KEY) ?? 0);
-    return until > this.now() ? until : null;
+  private checkNotRetaliation(proposer: MemberInfo, target: MemberInfo): string | null {
+    const lockMs = this.policy.retaliationLockHours * HOUR;
+    const theirs = this.store
+      .casesSince(this.now() - lockMs)
+      .find((c) => c.proposerId === target.id && this.accusedOf(c).includes(proposer.id));
+    if (!theirs) return null;
+    return `${target.name} filed case #${theirs.id} against you, so you can't file against them until ${when(theirs.filedAt + lockMs)}. You can post a statement on that case instead.`;
   }
 
-  private openInLane(lane: Lane): CaseRecord[] {
-    return this.store.openCases().filter((c) => laneOf(c) === lane);
+  /** Refuse if the same thing was voted down recently. */
+  private checkNotRetried(matches: (c: CaseRecord) => boolean, retryAfterMs: number, what: string): string | null {
+    const failed = this.store
+      .casesClosedAfter(this.now() - retryAfterMs)
+      .find((c) => c.status === "failed" && matches(c));
+    if (!failed) return null;
+    return `${what} failed (case #${failed.id}). It can't be proposed again until ${when(failed.closedAt! + retryAfterMs)}.`;
   }
 
-  private checkElectorate(electorate: string[], witnesses: string[], req: Requirement): string | null {
+  private checkCanPass(electorate: string[], witnesses: string[], req: Requirement): string | null {
     if (electorate.length < req.yes) {
-      return `Only ${electorate.length} ${electorate.length === 1 ? "person" : "people"} can vote on this and it needs ${req.yes} yes, so it couldn't pass.`;
+      return `Only ${plural(electorate.length, "person", "people")} can vote on this and it needs ${req.yes} yes, so it couldn't pass.`;
     }
     const eligibleWitnesses = witnesses.filter((w) => electorate.includes(w)).length;
     if (eligibleWitnesses < req.witnessYes) {
@@ -195,250 +264,221 @@ export class Engine {
     return null;
   }
 
-  private create(c: NewCase, breakerReason: string): Result<CaseRecord> {
-    if (this.tripBreaker()) return no(breakerReason, true);
-    return ok(this.store.insertCase(c));
-  }
-
-  // Filing ----------------------------------------------------------------
-
-  fileSanction(input: SanctionInput): Result<CaseRecord> {
-    return this.store.tx(() => this.fileSanctionTx(input));
-  }
-
-  private fileSanctionTx(input: SanctionInput): Result<CaseRecord> {
-    const { proposer: p, target: t } = input;
+  /** Build the electorate, check the case could pass, trip the breaker if needed, and save. */
+  private open(draft: Draft, members: MemberInfo[]): Result<CaseRecord> {
+    const electorate = this.electorate(members, draft.proposerId, draft.accused);
+    const witnesses = draft.witnesses ?? [];
+    const cannotPass = this.checkCanPass(electorate, witnesses, draft.requirement);
+    if (cannotPass) return refuse(cannotPass);
+    if (this.tripBreaker()) {
+      const { maxCasesPerHour, pauseMinutes } = this.policy.breaker;
+      return {
+        ok: false,
+        breakerTripped: true,
+        reason: `${maxCasesPerHour} cases were already filed in the last hour, so new cases are paused for ${pauseMinutes} minutes.`,
+      };
+    }
     const now = this.now();
-    const paused = this.checkBreaker();
-    if (paused) return no(paused);
-    const bad = this.checkProposer(p);
-    if (bad) return no(bad);
-    if (t.id === p.id) return no("You can't file a case against yourself.");
-    if (t.isBot) return no("Bots can't be put on trial.");
-    if (t.immune) return no(`${t.name} is the owner, an admin, or ranks above the bot, so the bot can't act on them.`);
-
-    const track = this.trackOf(t);
-    const step = findStep(this.policy, track, input.stepId);
-    if (!step) {
-      const options = stepsFor(this.policy, track).map((s) => s.label).join(", ");
-      return no(`${t.name} is ${track === "member" ? "a member" : "a newcomer"}, so the options are: ${options}.`);
-    }
-    const level = this.level(t.id);
-    if (track === "member" && !stepAllowed(step, level)) {
-      const top = highestAllowedStep(this.policy, level);
-      return no(`${t.name} is at level ${level}, so the most a case can ask for is ${top?.label ?? "a warning"}. Punishments go up one step at a time.`);
-    }
-
-    const lane = laneOf({ kind: "sanction", stepId: step.id });
-    const openForTarget = this.openInLane(lane).find((c) => this.accusedOf(c).includes(t.id));
-    if (openForTarget) return no(`There's already an open case about ${t.name} (case #${openForTarget.id}). Vote on that one.`);
-    const openForProposer = this.openInLane(lane).find((c) => c.proposerId === p.id);
-    if (openForProposer) return no(`You already have an open case (case #${openForProposer.id}). Wait for it to close.`);
-
-    const recent = this.store.casesSince(now - Math.max(this.policy.retaliationLockHours * HOUR, 7 * DAY));
-    const retaliation = recent.find(
-      (c) => c.proposerId === t.id && this.accusedOf(c).includes(p.id) && c.filedAt > now - this.policy.retaliationLockHours * HOUR,
-    );
-    if (retaliation) {
-      const until = retaliation.filedAt + this.policy.retaliationLockHours * HOUR;
-      return no(`${t.name} filed case #${retaliation.id} against you, so you can't file against them until <t:${Math.ceil(until / 1000)}:f>. You can post a statement on that case instead.`);
-    }
-    const failed = recent.find(
-      (c) =>
-        c.kind === "sanction" &&
-        c.status === "failed" &&
-        c.targetId === t.id &&
-        c.stepId === step.id &&
-        (c.closedAt ?? 0) + step.retryAfterFailMinutes * MIN > now,
-    );
-    if (failed) {
-      const until = (failed.closedAt ?? now) + step.retryAfterFailMinutes * MIN;
-      return no(`A vote for ${step.label} on ${t.name} failed (case #${failed.id}). It can't be proposed again until <t:${Math.ceil(until / 1000)}:f>.`);
-    }
-
-    const voice = input.voice === "auto" ? t.voiceChannelId !== null : input.voice;
-    let witnesses: string[] = [];
-    if (voice) {
-      const from = now - this.policy.witnessWindowMinutes * MIN;
-      witnesses = [...witnessesOf(t.id, this.store.sessionsSince(from), from, now)];
-      if (!witnesses.includes(p.id)) {
-        return no(`For a voice case you need to have been in voice with ${t.name} in the last ${this.policy.witnessWindowMinutes} minutes.`);
-      }
-    }
-
-    const requirement: Requirement = {
-      yes: step.yes,
-      share: step.share,
-      witnessYes: voice ? Math.min(step.witnessYes, step.yes) : 0,
-      closeOnThreshold: step.closeOnThreshold,
-    };
-    const electorate = this.electorate(input.members, [p.id, t.id], [t.id]);
-    const tooFew = this.checkElectorate(electorate, witnesses, requirement);
-    if (tooFew) return no(tooFew);
-
-    return this.create(
-      {
-        kind: "sanction",
-        track,
-        stepId: step.id,
-        targetId: t.id,
-        partyBId: null,
-        proposerId: p.id,
-        rule: input.rule,
-        reason: input.reason,
-        voice,
-        evidence: input.evidence,
+    return ok(
+      this.store.insertCase({
+        kind: draft.kind,
+        track: null,
+        stepId: null,
+        targetId: draft.accused[0]!,
+        partyBId: draft.accused[1] ?? null,
+        proposerId: draft.proposerId,
+        rule: null,
+        reason: draft.reason,
+        voice: false,
+        evidence: null,
         electorate,
         witnesses,
-        requirement,
-        targetLevel: track === "member" ? level : null,
+        requirement: draft.requirement,
+        targetLevel: null,
         filedAt: now,
-        closesAt: now + step.windowMinutes * MIN,
+        closesAt: now + draft.windowMinutes * MIN,
         shadow: this.shadow,
         appealOf: null,
-      },
-      this.breakerMessage(),
+        ...draft.extra,
+      }),
     );
+  }
+
+  // Filing ------------------------------------------------------------------
+
+  fileSanction(input: SanctionInput): Result<CaseRecord> {
+    return this.store.tx(() => {
+      const { proposer, target } = input;
+      const early =
+        this.checkFilingOpen(proposer) ??
+        (target.id === proposer.id ? "You can't file a case against yourself." : null) ??
+        this.checkActionable(target, "be put on trial");
+      if (early) return refuse(early);
+
+      const track = this.trackOf(target);
+      const step = findStep(this.policy, track, input.stepId);
+      if (!step) {
+        const options = stepsFor(this.policy, track)
+          .map((s) => s.label)
+          .join(", ");
+        return refuse(
+          `${target.name} is ${track === "member" ? "a member" : "a newcomer"}, so the options are: ${options}.`,
+        );
+      }
+      const level = this.level(target.id);
+      if (track === "member" && !stepAllowed(step, level)) {
+        const top = highestAllowedStep(this.policy, level);
+        return refuse(
+          `${target.name} is at level ${level}, so the most a case can ask for is ${top?.label ?? "a warning"}. Punishments go up one step at a time.`,
+        );
+      }
+
+      const later =
+        this.checkLaneFree(laneOf({ kind: "sanction", stepId: step.id }), [target.id], proposer.id) ??
+        this.checkNotRetaliation(proposer, target) ??
+        this.checkNotRetried(
+          (c) => c.kind === "sanction" && c.targetId === target.id && c.stepId === step.id,
+          step.retryAfterFailMinutes * MIN,
+          `A vote for ${step.label} on ${target.name}`,
+        );
+      if (later) return refuse(later);
+
+      const voice = input.voice === "auto" ? target.voiceChannelId !== null : input.voice;
+      const witnesses = voice ? this.witnesses(target.id) : [];
+      if (voice && !witnesses.includes(proposer.id)) {
+        return refuse(
+          `For a voice case you need to have been in voice with ${target.name} in the last ${this.policy.witnessWindowMinutes} minutes.`,
+        );
+      }
+
+      return this.open(
+        {
+          kind: "sanction",
+          proposerId: proposer.id,
+          accused: [target.id],
+          reason: input.reason,
+          requirement: {
+            yes: step.yes,
+            share: step.share,
+            witnessYes: voice ? Math.min(step.witnessYes, step.yes) : 0,
+            closeOnThreshold: step.closeOnThreshold,
+          },
+          windowMinutes: step.windowMinutes,
+          witnesses,
+          extra: {
+            track,
+            stepId: step.id,
+            rule: input.rule,
+            voice,
+            evidence: input.evidence,
+            targetLevel: track === "member" ? level : null,
+          },
+        },
+        input.members,
+      );
+    });
   }
 
   fileNoContact(input: NoContactInput): Result<CaseRecord> {
-    return this.store.tx(() => this.fileNoContactTx(input));
-  }
+    return this.store.tx(() => {
+      const { proposer, a, b } = input;
+      const rule = this.policy.noContact;
+      const samePair = (c: { targetId: string; partyBId: string | null }) =>
+        (c.targetId === a.id && c.partyBId === b.id) || (c.targetId === b.id && c.partyBId === a.id);
+      const active = this.store
+        .activeNoContacts(this.now(), this.shadow)
+        .some((o) => samePair({ targetId: o.aId, partyBId: o.bId }));
 
-  private fileNoContactTx(input: NoContactInput): Result<CaseRecord> {
-    const { proposer: p, a, b } = input;
-    const now = this.now();
-    const rule = this.policy.noContact;
-    const paused = this.checkBreaker();
-    if (paused) return no(paused);
-    const bad = this.checkProposer(p);
-    if (bad) return no(bad);
-    if (a.id === b.id) return no("A no-contact order needs two different people.");
-    if (p.id === a.id || p.id === b.id) return no("A no-contact order has to be proposed by someone outside the feud.");
-    for (const m of [a, b]) {
-      if (m.isBot) return no("Bots can't be part of a no-contact order.");
-      if (m.immune) return no(`${m.name} is the owner, an admin, or ranks above the bot, so the bot can't enforce an order on them.`);
-    }
-    const samePair = (c: { targetId: string; partyBId: string | null }) =>
-      (c.targetId === a.id && c.partyBId === b.id) || (c.targetId === b.id && c.partyBId === a.id);
-    if (this.store.activeNoContacts(now, this.shadow).some((o) => samePair({ targetId: o.aId, partyBId: o.bId }))) {
-      return no(`${a.name} and ${b.name} already have a no-contact order.`);
-    }
-    const open = this.openInLane("nocontact");
-    const pairOpen = open.find(samePair);
-    if (pairOpen) return no(`There's already an open no-contact case for them (case #${pairOpen.id}).`);
-    const mine = open.find((c) => c.proposerId === p.id);
-    if (mine) return no(`You already have an open no-contact case (case #${mine.id}).`);
-    const failed = this.store
-      .casesSince(now - rule.retryAfterFailMinutes * MIN - 7 * DAY)
-      .find((c) => c.kind === "nocontact" && c.status === "failed" && samePair(c) && (c.closedAt ?? 0) + rule.retryAfterFailMinutes * MIN > now);
-    if (failed) {
-      const until = (failed.closedAt ?? now) + rule.retryAfterFailMinutes * MIN;
-      return no(`A no-contact vote for them failed (case #${failed.id}). Try again after <t:${Math.ceil(until / 1000)}:f>.`);
-    }
+      const problem =
+        this.checkFilingOpen(proposer) ??
+        (a.id === b.id ? "A no-contact order needs two different people." : null) ??
+        (proposer.id === a.id || proposer.id === b.id
+          ? "A no-contact order has to be proposed by someone outside the feud."
+          : null) ??
+        this.checkActionable(a, "be part of a no-contact order") ??
+        this.checkActionable(b, "be part of a no-contact order") ??
+        (active ? `${a.name} and ${b.name} already have a no-contact order.` : null) ??
+        this.checkLaneFree("nocontact", [a.id, b.id], proposer.id) ??
+        this.checkNotRetried(
+          (c) => c.kind === "nocontact" && samePair(c),
+          rule.retryAfterFailMinutes * MIN,
+          "A no-contact vote for them",
+        );
+      if (problem) return refuse(problem);
 
-    const requirement: Requirement = { yes: rule.yes, share: rule.share, witnessYes: 0, closeOnThreshold: false };
-    const electorate = this.electorate(input.members, [p.id, a.id, b.id], [a.id, b.id]);
-    const tooFew = this.checkElectorate(electorate, [], requirement);
-    if (tooFew) return no(tooFew);
-
-    return this.create(
-      {
-        kind: "nocontact",
-        track: null,
-        stepId: null,
-        targetId: a.id,
-        partyBId: b.id,
-        proposerId: p.id,
-        rule: null,
-        reason: input.reason,
-        voice: false,
-        evidence: null,
-        electorate,
-        witnesses: [],
-        requirement,
-        targetLevel: null,
-        filedAt: now,
-        closesAt: now + rule.windowMinutes * MIN,
-        shadow: this.shadow,
-        appealOf: null,
-      },
-      this.breakerMessage(),
-    );
+      return this.open(
+        {
+          kind: "nocontact",
+          proposerId: proposer.id,
+          accused: [a.id, b.id],
+          reason: input.reason,
+          requirement: { yes: rule.yes, share: rule.share, witnessYes: 0, closeOnThreshold: false },
+          windowMinutes: rule.windowMinutes,
+        },
+        input.members,
+      );
+    });
   }
 
   fileAppeal(input: AppealInput): Result<CaseRecord> {
-    return this.store.tx(() => this.fileAppealTx(input));
+    return this.store.tx(() => {
+      const { proposer, userId } = input;
+      const rule = this.policy.appeal;
+      const closed = this.checkFilingOpen(proposer);
+      if (closed) return refuse(closed);
+
+      const ban = this.store.activeBan(userId, this.shadow);
+      if (!ban) return refuse("That person doesn't have an active ban from the bot.");
+      const eligibleAt =
+        ban.until === null
+          ? ban.imposedAt + rule.permanentAfterDays * DAY
+          : ban.imposedAt + (ban.until - ban.imposedAt) * rule.afterFractionOfBan;
+      if (this.now() < eligibleAt) return refuse(`This ban can be appealed from ${when(eligibleAt)}.`);
+
+      const problem =
+        this.checkLaneFree("appeal", [userId], proposer.id) ??
+        this.checkNotRetried(
+          (c) => c.kind === "appeal" && c.appealOf === ban.caseId,
+          rule.retryAfterFailDays * DAY,
+          "An appeal for this ban",
+        );
+      if (problem) return refuse(problem);
+
+      return this.open(
+        {
+          kind: "appeal",
+          proposerId: proposer.id,
+          accused: [userId],
+          reason: input.reason,
+          requirement: { yes: rule.yes, share: rule.share, witnessYes: 0, closeOnThreshold: false },
+          windowMinutes: rule.windowMinutes,
+          extra: { appealOf: ban.caseId },
+        },
+        input.members,
+      );
+    });
   }
 
-  private fileAppealTx(input: AppealInput): Result<CaseRecord> {
-    const { proposer: p, userId } = input;
-    const now = this.now();
-    const rule = this.policy.appeal;
-    const paused = this.checkBreaker();
-    if (paused) return no(paused);
-    const bad = this.checkProposer(p);
-    if (bad) return no(bad);
-    const ban = this.store.activeBan(userId, this.shadow);
-    if (!ban) return no("That person doesn't have an active ban from the bot.");
-
-    const eligibleAt = ban.until === null ? ban.imposedAt + rule.permanentAfterDays * DAY : ban.imposedAt + (ban.until - ban.imposedAt) * rule.afterFractionOfBan;
-    if (now < eligibleAt) return no(`This ban can be appealed from <t:${Math.ceil(eligibleAt / 1000)}:f>.`);
-
-    const open = this.openInLane("appeal");
-    const existing = open.find((c) => c.targetId === userId);
-    if (existing) return no(`There's already an open appeal for them (case #${existing.id}).`);
-    const mine = open.find((c) => c.proposerId === p.id);
-    if (mine) return no(`You already have an open appeal (case #${mine.id}).`);
-    const failed = this.store
-      .casesSince(now - rule.retryAfterFailDays * DAY - 7 * DAY)
-      .find((c) => c.kind === "appeal" && c.status === "failed" && c.appealOf === ban.caseId && (c.closedAt ?? 0) + rule.retryAfterFailDays * DAY > now);
-    if (failed) {
-      const until = (failed.closedAt ?? now) + rule.retryAfterFailDays * DAY;
-      return no(`An appeal for this ban failed (case #${failed.id}). The next one can be filed from <t:${Math.ceil(until / 1000)}:f>.`);
-    }
-
-    const requirement: Requirement = { yes: rule.yes, share: rule.share, witnessYes: 0, closeOnThreshold: false };
-    const electorate = this.electorate(input.members, [p.id, userId], [userId]);
-    const tooFew = this.checkElectorate(electorate, [], requirement);
-    if (tooFew) return no(tooFew);
-
-    return this.create(
-      {
-        kind: "appeal",
-        track: null,
-        stepId: null,
-        targetId: userId,
-        partyBId: null,
-        proposerId: p.id,
-        rule: null,
-        reason: input.reason,
-        voice: false,
-        evidence: null,
-        electorate,
-        witnesses: [],
-        requirement,
-        targetLevel: null,
-        filedAt: now,
-        closesAt: now + rule.windowMinutes * MIN,
-        shadow: this.shadow,
-        appealOf: ban.caseId,
-      },
-      this.breakerMessage(),
-    );
+  private witnesses(targetId: string): string[] {
+    const from = this.now() - this.policy.witnessWindowMinutes * MIN;
+    return [...witnessesOf(targetId, this.store.sessionsSince(from), from, this.now())];
   }
 
-  private breakerMessage(): string {
-    const { maxCasesPerHour, pauseMinutes } = this.policy.breaker;
-    return `${maxCasesPerHour} cases were already filed in the last hour, so new cases are paused for ${pauseMinutes} minutes.`;
+  // The breaker -------------------------------------------------------------
+
+  breakerPausedUntil(): number | null {
+    const until = Number(this.store.getState(BREAKER_KEY) ?? 0);
+    return until > this.now() ? until : null;
   }
 
-  /** Banned users an appeal could be filed for, newest first. */
-  appealable(): { userId: string; caseId: number; until: number | null }[] {
-    return this.store.activeBans(this.shadow).map((b) => ({ userId: b.userId, caseId: b.caseId, until: b.until }));
+  /** Trip the breaker if one more filing would exceed the hourly limit. */
+  private tripBreaker(): boolean {
+    if (this.store.countCasesSince(this.now() - HOUR) < this.policy.breaker.maxCasesPerHour) return false;
+    this.store.setState(BREAKER_KEY, String(this.now() + this.policy.breaker.pauseMinutes * MIN));
+    return true;
   }
 
-  // Voting ----------------------------------------------------------------
+  // Voting ------------------------------------------------------------------
 
   tally(c: CaseRecord): Tally {
     const votes = this.store.votes(c.id).filter((v) => c.electorate.includes(v.voterId));
@@ -464,13 +504,15 @@ export class Engine {
   vote(caseId: number, voterId: string, value: VoteValue): Result<VoteOutcome> {
     return this.store.tx(() => {
       const c = this.store.getCase(caseId);
-      if (!c) return no(`There's no case #${caseId}.`);
-      if (c.status !== "open") return no(`Case #${caseId} is closed.`);
-      if (this.now() >= c.closesAt) return no(`Voting on case #${caseId} has ended. The result will be posted in a moment.`);
-      if (!c.electorate.includes(voterId)) return no(this.whyCantVote(c, voterId));
+      if (!c) return refuse(`There's no case #${caseId}.`);
+      if (c.status !== "open") return refuse(`Case #${caseId} is closed.`);
+      if (this.now() >= c.closesAt) {
+        return refuse(`Voting on case #${caseId} has ended. The result will be posted in a moment.`);
+      }
+      if (!c.electorate.includes(voterId)) return refuse(this.whyCantVote(c, voterId));
       const previous = this.store.votes(caseId).find((v) => v.voterId === voterId)?.value ?? null;
       this.store.castVote(caseId, voterId, value, this.now());
-      const settled = this.settle(caseId, false);
+      const settled = this.settle(caseId);
       return ok({ case: settled?.case ?? this.store.getCase(caseId)!, previous, settled });
     });
   }
@@ -479,47 +521,70 @@ export class Engine {
   closeDue(): Settled[] {
     const out: Settled[] = [];
     for (const c of this.store.dueCases(this.now())) {
-      const s = this.store.tx(() => this.settle(c.id, true));
+      const s = this.store.tx(() => this.settle(c.id));
       if (s) out.push(s);
     }
     return out;
   }
 
   /**
-   * Decide a case and, if decided, close it and record what passing means
-   * (strikes, bans, orders) in the same transaction. Returns null if the case
-   * is still open or something else already closed it.
+   * Decide a case. If decided, close it and record the consequences (strikes,
+   * bans, orders) in the same transaction. Returns null while it is still open
+   * or if something else already closed it.
    */
-  private settle(caseId: number, final: boolean): Settled | null {
+  private settle(caseId: number): Settled | null {
     const c = this.store.getCase(caseId);
     if (!c || c.status !== "open") return null;
-    const t = this.tally(c);
-    const decision = final ? (t.decision === "pass" ? "pass" : "fail") : t.decision;
+    const { decision } = this.tally(c);
     if (decision === "open") return null;
     const passed = decision === "pass";
     if (!this.store.closeCase(c.id, passed ? "passed" : "failed", this.now())) return null;
     const closed = this.store.getCase(c.id)!;
-    return { case: closed, passed, effects: passed ? this.recordPassed(closed) : [] };
+    return { case: closed, passed, effects: passed ? this.recordOutcome(closed) : [] };
   }
 
-  private recordPassed(c: CaseRecord): Effect[] {
+  private recordOutcome(c: CaseRecord): Effect[] {
     const now = this.now();
-    if (c.kind === "nocontact") {
-      const until = now + this.policy.noContact.days * DAY;
-      this.store.addNoContact({ caseId: c.id, aId: c.targetId, bId: c.partyBId!, until, shadow: c.shadow });
-      return [{ type: "noContact", aId: c.targetId, bId: c.partyBId!, until }];
+    switch (c.kind) {
+      case "nocontact": {
+        const until = now + this.policy.noContact.days * DAY;
+        this.store.addNoContact({ caseId: c.id, aId: c.targetId, bId: c.partyBId!, until, shadow: c.shadow });
+        return [{ type: "noContact", aId: c.targetId, bId: c.partyBId!, until }];
+      }
+      case "appeal": {
+        this.store.liftBan(c.targetId, now);
+        this.store.cancelScheduled("unban", c.targetId, now);
+        if (c.appealOf !== null) this.store.voidStrike(c.appealOf);
+        return [{ type: "unban", userId: c.targetId }];
+      }
+      case "sanction":
+        return this.recordSanction(c);
     }
-    if (c.kind === "appeal") {
-      this.store.liftBan(c.targetId, now);
-      this.store.cancelScheduled("unban", c.targetId, now);
-      if (c.appealOf !== null) this.store.voidStrike(c.appealOf);
-      return [{ type: "unban", userId: c.targetId }];
-    }
+  }
+
+  private recordSanction(c: CaseRecord): Effect[] {
     const step = findStep(this.policy, c.track ?? "member", c.stepId ?? "");
     if (!step) return [];
+    const now = this.now();
     const p = step.punishment;
-    const endsAt = p.type === "timeout" ? now + p.minutes * MIN : p.type === "ban" ? (p.days === null ? null : now + p.days * DAY) : now;
-    if (step.level !== null) this.store.addStrike({ userId: c.targetId, caseId: c.id, level: step.level, imposedAt: now, endsAt, shadow: c.shadow });
+    const endsAt =
+      p.type === "timeout"
+        ? now + p.minutes * MIN
+        : p.type === "ban"
+          ? p.days === null
+            ? null
+            : now + p.days * DAY
+          : now;
+    if (step.level !== null) {
+      this.store.addStrike({
+        userId: c.targetId,
+        caseId: c.id,
+        level: step.level,
+        imposedAt: now,
+        endsAt,
+        shadow: c.shadow,
+      });
+    }
     switch (p.type) {
       case "cooloff":
         return [{ type: "cooloff", userId: c.targetId, minutes: p.minutes }];
@@ -540,10 +605,20 @@ export class Engine {
     return c.status === "open" && c.kind !== "appeal" && (userId === c.targetId || userId === c.partyBId);
   }
 
-  // Housekeeping ----------------------------------------------------------
+  // Housekeeping ------------------------------------------------------------
 
-  /** Called when a ban is lifted outside the bot, for example by hand in Discord. */
-  banLiftedElsewhere(userId: string) {
+  /** A scheduled unban came due. Returns the case if the ban was still ours to lift. */
+  liftDueBan(userId: string, caseId: number): CaseRecord | null {
+    return this.store.tx(() => {
+      const ban = this.store.activeBan(userId, this.shadow);
+      if (!ban || ban.caseId !== caseId) return null;
+      this.store.liftBan(userId, this.now());
+      return this.store.getCase(caseId);
+    });
+  }
+
+  /** A ban was lifted outside the bot, for example by hand in Discord. Only live bans are affected. */
+  banLiftedElsewhere(userId: string): void {
     this.store.tx(() => {
       const ban = this.store.activeBan(userId, false);
       if (!ban) return;
@@ -553,7 +628,7 @@ export class Engine {
     });
   }
 
-  purgeOldVoice() {
+  purgeOldVoice(): void {
     this.store.purgeSessions(this.now() - this.policy.voiceRetentionDays * DAY);
   }
 }

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { Engine, type MemberInfo } from "../src/engine/engine.js";
+import { Engine, type MemberInfo, type Settled } from "../src/engine/engine.js";
 import { DEFAULT_POLICY } from "../src/policy.js";
 import { Store } from "../src/store.js";
 
@@ -28,7 +28,17 @@ let now: number;
 
 const by = (id: string) => members.find((m) => m.id === id)!;
 const file = (stepId: string, over: Record<string, unknown> = {}) =>
-  engine.fileSanction({ proposer: by("P"), target: by("T"), stepId, rule: "Be decent", reason: "rude", voice: false, evidence: null, members, ...over });
+  engine.fileSanction({
+    proposer: by("P"),
+    target: by("T"),
+    stepId,
+    rule: "Be decent",
+    reason: "rude",
+    voice: false,
+    evidence: null,
+    members,
+    ...over,
+  });
 const expectOk = <T>(r: { ok: true; value: T } | { ok: false; reason: string }): T => {
   if (!r.ok) throw new Error(r.reason);
   return r.value;
@@ -87,23 +97,77 @@ describe("filing", () => {
   it("allows one open case per person per lane, but a cool-off alongside", () => {
     expectOk(file("warn"));
     expectNo(file("warn"), "already an open case");
-    expectNo(engine.fileSanction({ proposer: by("V1"), target: by("T"), stepId: "warn", rule: null, reason: "x", voice: false, evidence: null, members }), "already an open case");
+    expectNo(
+      engine.fileSanction({
+        proposer: by("V1"),
+        target: by("T"),
+        stepId: "warn",
+        rule: null,
+        reason: "x",
+        voice: false,
+        evidence: null,
+        members,
+      }),
+      "already an open case",
+    );
     expectNo(file("warn", { target: by("V2") }), "You already have an open case");
     expectOk(file("cooloff"));
   });
 
   it("blocks retaliation for 24 hours", () => {
     expectOk(file("warn"));
-    const back = engine.fileSanction({ proposer: by("T"), target: by("P"), stepId: "warn", rule: null, reason: "no u", voice: false, evidence: null, members });
+    const back = engine.fileSanction({
+      proposer: by("T"),
+      target: by("P"),
+      stepId: "warn",
+      rule: null,
+      reason: "no u",
+      voice: false,
+      evidence: null,
+      members,
+    });
     expectNo(back, "can't file against them until");
     now += 24 * HOUR + 1;
-    expectOk(engine.fileSanction({ proposer: by("T"), target: by("P"), stepId: "warn", rule: null, reason: "no u", voice: false, evidence: null, members }));
+    expectOk(
+      engine.fileSanction({
+        proposer: by("T"),
+        target: by("P"),
+        stepId: "warn",
+        rule: null,
+        reason: "no u",
+        voice: false,
+        evidence: null,
+        members,
+      }),
+    );
   });
 
   it("keeps involved people off the voter list", () => {
     // V1 filed against T yesterday, and T filed against V2.
-    expectOk(engine.fileSanction({ proposer: by("V1"), target: by("T"), stepId: "warn", rule: null, reason: "x", voice: false, evidence: null, members }));
-    expectOk(engine.fileSanction({ proposer: by("T"), target: by("V2"), stepId: "warn", rule: null, reason: "x", voice: false, evidence: null, members }));
+    expectOk(
+      engine.fileSanction({
+        proposer: by("V1"),
+        target: by("T"),
+        stepId: "warn",
+        rule: null,
+        reason: "x",
+        voice: false,
+        evidence: null,
+        members,
+      }),
+    );
+    expectOk(
+      engine.fileSanction({
+        proposer: by("T"),
+        target: by("V2"),
+        stepId: "warn",
+        rule: null,
+        reason: "x",
+        voice: false,
+        evidence: null,
+        members,
+      }),
+    );
     engine.closeDue();
     now += 31 * MIN;
     engine.closeDue();
@@ -129,8 +193,17 @@ describe("filing", () => {
   });
 
   it("trips the breaker after 5 cases in an hour", () => {
-    for (let i = 1; i <= 5; i++) expectOk(file("warn", { target: by(`V${i}`) , proposer: by(`V${i + 5}`) }));
-    const r = engine.fileSanction({ proposer: by("P"), target: by("T"), stepId: "warn", rule: null, reason: "x", voice: false, evidence: null, members });
+    for (let i = 1; i <= 5; i++) expectOk(file("warn", { target: by(`V${i}`), proposer: by(`V${i + 5}`) }));
+    const r = engine.fileSanction({
+      proposer: by("P"),
+      target: by("T"),
+      stepId: "warn",
+      rule: null,
+      reason: "x",
+      voice: false,
+      evidence: null,
+      members,
+    });
     expect(r.ok).toBe(false);
     expect((r as { breakerTripped?: boolean }).breakerTripped).toBe(true);
     expectNo(file("cooloff"), "paused until");
@@ -187,9 +260,9 @@ describe("voting and settling", () => {
   });
 
   it("climbs the ladder one step at a time and records bans with an unban job", () => {
-    const pass = (stepId: string) => {
+    const pass = (stepId: string): Settled => {
       const c = expectOk(file(stepId));
-      let settled = null;
+      let settled: Settled | null = null;
       for (const v of c.electorate) {
         settled = expectOk(engine.vote(c.id, v, "yes")).settled;
         if (settled) break;
@@ -198,8 +271,8 @@ describe("voting and settling", () => {
         now = c.closesAt;
         settled = engine.closeDue()[0] ?? null;
       }
-      expect(settled?.passed).toBe(true);
-      return settled!;
+      if (!settled?.passed) throw new Error(`${stepId} did not pass`);
+      return settled;
     };
     pass("warn");
     pass("timeout-1h");
@@ -250,11 +323,17 @@ describe("no-contact and appeals", () => {
     const [s] = engine.closeDue();
     expect(s?.effects[0]).toMatchObject({ type: "noContact", aId: "P", bId: "T" });
     expect(store.activeNoContacts(now, false)).toHaveLength(1);
-    expectNo(engine.fileNoContact({ proposer: by("V1"), a: by("T"), b: by("P"), reason: "again", members }), "already have a no-contact order");
+    expectNo(
+      engine.fileNoContact({ proposer: by("V1"), a: by("T"), b: by("P"), reason: "again", members }),
+      "already have a no-contact order",
+    );
   });
 
   it("must be proposed from outside the feud", () => {
-    expectNo(engine.fileNoContact({ proposer: by("P"), a: by("P"), b: by("T"), reason: "x", members }), "outside the feud");
+    expectNo(
+      engine.fileNoContact({ proposer: by("P"), a: by("P"), b: by("T"), reason: "x", members }),
+      "outside the feud",
+    );
   });
 
   it("appeals a ban after half of it has passed and voids the strike", () => {
@@ -278,14 +357,28 @@ describe("no-contact and appeals", () => {
     const c = expectOk(engine.fileAppeal({ proposer: by("P"), userId: "T", reason: "sorry", members }));
     now = c.closesAt;
     engine.closeDue();
-    expectNo(engine.fileAppeal({ proposer: by("V1"), userId: "T", reason: "sorry", members }), "next one can be filed from");
+    expectNo(
+      engine.fileAppeal({ proposer: by("V1"), userId: "T", reason: "sorry", members }),
+      "can't be proposed again until",
+    );
   });
 });
 
 describe("shadow mode", () => {
   it("keeps shadow strikes apart from real ones", () => {
     const shadow = new Engine(store, DEFAULT_POLICY, true, () => now);
-    const c = expectOk(shadow.fileSanction({ proposer: by("P"), target: by("T"), stepId: "warn", rule: null, reason: "x", voice: false, evidence: null, members }));
+    const c = expectOk(
+      shadow.fileSanction({
+        proposer: by("P"),
+        target: by("T"),
+        stepId: "warn",
+        rule: null,
+        reason: "x",
+        voice: false,
+        evidence: null,
+        members,
+      }),
+    );
     ["V1", "V2", "V3"].forEach((v) => expectOk(shadow.vote(c.id, v, "yes")));
     now = c.closesAt;
     shadow.closeDue();

@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 import { witnessesOf, type Session } from "../src/engine/witness.js";
 
 const MIN = 60_000;
-const s = (userId: string, channelId: string, joined: number, left: number | null): Session => ({ userId, channelId, joinedAt: joined * MIN, leftAt: left === null ? null : left * MIN });
+const s = (userId: string, channelId: string, joined: number, left: number | null): Session => ({
+  userId,
+  channelId,
+  joinedAt: joined * MIN,
+  leftAt: left === null ? null : left * MIN,
+});
 
 describe("witnessesOf", () => {
   it("finds people who overlapped with the target in the same channel inside the window", () => {
