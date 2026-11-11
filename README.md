@@ -18,15 +18,15 @@ Built for one server at a time. TypeScript, discord.js 14, SQLite through `node:
 
 **The ladder.** Punishments go up one step at a time. Each passed case records a strike at that step's level. A person can only be proposed for one level above their current one. The level drops one step for every 30 clean days after the last punishment ends, and strikes are forgotten 90 days after they end.
 
-| Level | Punishment | Yes votes | Share | Voting window |
-|---|---|---|---|---|
-| – | Cool-off: 10 min timeout, no strike | 3 | majority, closes as soon as it hits 3 | 3 min |
-| 1 | Warning by DM | 3 | majority | 30 min |
-| 2 | Timeout 1h | 4 | 2/3 | 15 min |
-| 3 | Timeout 24h | 5 | 2/3 | 2h |
-| 4 | Timeout 7 days | 6 | 2/3 | 24h |
-| 5 | Ban 30 days, lifted by the bot | 8 | 3/4 | 48h |
-| 6 | Permanent ban | 10 | 3/4 | 72h |
+| Level | Punishment                          | Yes votes | Share                                 | Voting window |
+| ----- | ----------------------------------- | --------- | ------------------------------------- | ------------- |
+| –     | Cool-off: 10 min timeout, no strike | 3         | majority, closes as soon as it hits 3 | 3 min         |
+| 1     | Warning by DM                       | 3         | majority                              | 30 min        |
+| 2     | Timeout 1h                          | 4         | 2/3                                   | 15 min        |
+| 3     | Timeout 24h                         | 5         | 2/3                                   | 2h            |
+| 4     | Timeout 7 days                      | 6         | 2/3                                   | 24h           |
+| 5     | Ban 30 days, lifted by the bot      | 8         | 3/4                                   | 48h           |
+| 6     | Permanent ban                       | 10        | 3/4                                   | 72h           |
 
 **Newcomers** (under 14 days) are on a shorter track: cool-off with 2 yes, kick with 3 yes (2/3, 15 min), ban with 4 yes (2/3, 1h).
 
@@ -42,17 +42,17 @@ Built for one server at a time. TypeScript, discord.js 14, SQLite through `node:
 
 ## Commands
 
-| | |
-|---|---|
-| `/case who punishment reason [rule] [voice]` | File a case |
-| Right-click a user > Apps > File a case | Same, with a form |
-| Right-click a message > Apps > File a case about this | Same, and the message is attached as evidence |
-| `@tribunal @them what they did` | Same, the bot replies with a button that opens the form; reply to a message to attach it |
-| `/nocontact first second reason` | Propose a no-contact order |
-| `/appeal who reason` | Propose lifting a ban |
-| `/record [who]` | Someone's level, strikes and what can currently be proposed |
-| `/status` | Open cases, whether filing is paused, trial run or live |
-| `/help` | The rules above, generated from the live policy |
+|                                                       |                                                                                          |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `/case who punishment reason [rule] [voice]`          | File a case                                                                              |
+| Right-click a user > Apps > File a case               | Same, with a form                                                                        |
+| Right-click a message > Apps > File a case about this | Same, and the message is attached as evidence                                            |
+| `@tribunal @them what they did`                       | Same, the bot replies with a button that opens the form; reply to a message to attach it |
+| `/nocontact first second reason`                      | Propose a no-contact order                                                               |
+| `/appeal who reason`                                  | Propose lifting a ban                                                                    |
+| `/record [who]`                                       | Someone's level, strikes and what can currently be proposed                              |
+| `/status`                                             | Open cases, whether filing is paused, trial run or live                                  |
+| `/help`                                               | The rules above, generated from the live policy                                          |
 
 ## Setup
 
@@ -93,14 +93,14 @@ Run `npm run register` again whenever you change the steps or the rules in `conf
 
 `config.json`:
 
-| Key | What |
-|---|---|
-| `applicationId`, `guildId`, `courtChannelId`, `logChannelId` | Ids from the setup above |
-| `token` | Bot token, if not using the `DISCORD_TOKEN` environment variable |
-| `shadow` | `true` for a trial run, `false` to act. Default `true` |
-| `rules` | Short rule names shown as a menu when filing, up to 25 |
-| `databasePath` | Default `data/tribunal.db` |
-| `policy` | Any subset of the policy in `src/policy.ts`, deep-merged over the defaults |
+| Key                                                          | What                                                                       |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------- |
+| `applicationId`, `guildId`, `courtChannelId`, `logChannelId` | Ids from the setup above                                                   |
+| `token`                                                      | Bot token, if not using the `DISCORD_TOKEN` environment variable           |
+| `shadow`                                                     | `true` for a trial run, `false` to act. Default `true`                     |
+| `rules`                                                      | Short rule names shown as a menu when filing, up to 25                     |
+| `databasePath`                                               | Default `data/tribunal.db`                                                 |
+| `policy`                                                     | Any subset of the policy in `src/policy.ts`, deep-merged over the defaults |
 
 Everything in the ladder is configurable. Example, a gentler server:
 
@@ -121,24 +121,33 @@ Step ids are stable names used in commands and the database; keep them when you 
 ## Development
 
 ```sh
-npm test            # 80 tests: rules engine, store, rendering, Discord actions, the bot through fake Discord objects
-npm run typecheck
+npm ci
+npm run check       # typecheck, lint (eslint + prettier), tests
+npm test            # 95 tests: rules engine, store, rendering, Discord actions, no-contact guard, the bot through fake Discord objects
 npm run build
 ```
 
 Layout:
 
 - `src/policy.ts` the defaults and the share math
-- `src/engine/` pure rules: `tally.ts` (when a vote is decided), `ladder.ts` (levels and decay), `witness.ts` (who was in voice), `engine.ts` (filing, voting, settling; every check and write in one SQLite transaction)
-- `src/store.ts` SQLite schema and queries
-- `src/discord/` the adapter: `commands.ts`, `render.ts` (cards, log lines, help), `actions.ts` (apply an effect to Discord), `members.ts`, `bot.ts` (events and wiring)
+- `src/engine/` pure rules, no Discord: `tally.ts` (when a vote is decided), `ladder.ts` (levels and decay), `witness.ts` (who was in voice), `engine.ts` (filing guards, voting, settling; every check and write in one SQLite transaction)
+- `src/store.ts` SQLite schema and queries on `node:sqlite`
+- `src/discord/` the adapter
+  - `bot.ts` the client, event wiring and the clock
+  - `interactions.ts` routes commands, buttons, modals and autocomplete to the engine
+  - `court.ts` posts, refreshes and closes vote cards; writes the log channel; runs deadlines and due unbans
+  - `actions.ts` the only file that times out, kicks, bans or DMs anyone
+  - `no-contact.ts` enforces no-contact orders from mention and voice events
+  - `mentions.ts` the `@bot @them ...` entry point
+  - `forms.ts`, `custom-ids.ts`, `render.ts`, `commands.ts`, `members.ts`, `drafts.ts`
+- `src/format.ts`, `logger.ts`, `ttl-map.ts` small shared pieces
 - `src/index.ts`, `register.ts`, `invite.ts`, `backup.ts` entrypoints
 
 ## Design notes
 
 Why it looks like this, briefly. More in `DESIGN.md`.
 
-- **Hidden tally.** Seeing a running count changes votes: in a randomized experiment a single early upvote made later positive votes 32% more likely (Muchnik, Aral and Taylor, *Science* 2013). The count is hidden until the case closes.
+- **Hidden tally.** Seeing a running count changes votes: in a randomized experiment a single early upvote made later positive votes 32% more likely (Muchnik, Aral and Taylor, _Science_ 2013). The count is hidden until the case closes.
 - **Public names afterwards.** In a small group, secret votes breed suspicion about who voted which way. Names being public after the fact is accountability without letting early votes steer later ones.
 - **The proposer doesn't vote and can't be voted against in return for a day.** Lobsters requires a reason on every flag "to curb punishing disagreement"; Wikipedia community bans are decided by editors "not involved in the underlying dispute." Both ideas are in here.
 - **Steps, not jumps.** League of Legends' Tribunal reported that 74% of players warned once never came back. Mild first punishments do most of the work, so the ladder forces them.

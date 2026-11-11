@@ -52,10 +52,10 @@ Most protection against abuse is in the first two stages, before anyone votes.
 
 ## Sources
 
-- Muchnik, Aral, Taylor. Social Influence Bias: A Randomized Experiment. *Science* 341 (2013).
-- Fan, Zhang. Digital Juries: A Civics-Oriented Approach to Platform Governance. *CHI* 2020.
-- Jiang, Kiene, Middler, Brubaker, Fiesler. Moderation Challenges in Voice-based Online Communities on Discord. *CSCW* 2019.
-- Xiao, Cheshire, Salehi. Addressing Interpersonal Harm in Online Gaming Communities: The Opportunities and Challenges for a Restorative Justice Approach. *ACM TOCHI* 2023.
-- Zhang, Hugh, Bernstein. PolicyKit: Building Governance in Online Communities. *UIST* 2020.
+- Muchnik, Aral, Taylor. Social Influence Bias: A Randomized Experiment. _Science_ 341 (2013).
+- Fan, Zhang. Digital Juries: A Civics-Oriented Approach to Platform Governance. _CHI_ 2020.
+- Jiang, Kiene, Middler, Brubaker, Fiesler. Moderation Challenges in Voice-based Online Communities on Discord. _CSCW_ 2019.
+- Xiao, Cheshire, Salehi. Addressing Interpersonal Harm in Online Gaming Communities: The Opportunities and Challenges for a Restorative Justice Approach. _ACM TOCHI_ 2023.
+- Zhang, Hugh, Bernstein. PolicyKit: Building Governance in Online Communities. _UIST_ 2020.
 - Riot Games Tribunal metrics (2011, 2012), as recorded on the League of Legends wiki.
 - Lobsters "About" page on invitation trees and flag reasons; Wikipedia banning policy on uninvolved editors and interaction bans; TF2 and CS2 vote-kick cooldowns.

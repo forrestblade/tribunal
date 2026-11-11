@@ -4,12 +4,7 @@
   "courtChannelId": "000000000000000000",
   "logChannelId": "000000000000000000",
   "shadow": true,
-  "rules": [
-    "Be decent to each other",
-    "No spam",
-    "No slurs or harassment",
-    "Keep it legal"
-  ],
+  "rules": ["Be decent to each other", "No spam", "No slurs or harassment", "Keep it legal"],
   "databasePath": "data/tribunal.db",
   "policy": {}
 }
