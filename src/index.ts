@@ -3,7 +3,13 @@ import { Bot } from "./discord/bot.js";
 import { Engine } from "./engine/engine.js";
 import { Store } from "./store.js";
 
-const config = loadConfig();
+let config;
+try {
+  config = loadConfig();
+} catch (e) {
+  console.error(e instanceof Error ? e.message : e);
+  process.exit(1);
+}
 const store = new Store(config.databasePath);
 const engine = new Engine(store, config.policy, config.shadow);
 const bot = new Bot(config, store, engine);
