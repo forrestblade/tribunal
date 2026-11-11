@@ -76,24 +76,27 @@ export function openCard(c: CaseRecord, policy: Policy, tally: Tally, statements
 }
 
 export function effectText(e: Effect, shadow: boolean): string {
-  const would = shadow ? "Would " : "";
-  const lower = (s: string) => (shadow ? s.charAt(0).toLowerCase() + s.slice(1) : s);
-  switch (e.type) {
-    case "cooloff":
-      return `${would}${lower(`Timed out ${user(e.userId)} for ${e.minutes} minutes`)}.`;
-    case "warn":
-      return `${would}${lower(`Warned ${user(e.userId)} by DM`)}.`;
-    case "timeout":
-      return `${would}${lower(`Timed out ${user(e.userId)} for ${formatMinutes(e.minutes)}`)}.`;
-    case "kick":
-      return `${would}${lower(`Kicked ${user(e.userId)}`)}.`;
-    case "ban":
-      return `${would}${lower(`Banned ${user(e.userId)}${e.days === null ? " permanently" : ` for ${e.days} days`}`)}.`;
-    case "unban":
-      return `${would}${lower(`Unbanned ${user(e.userId)}`)}.`;
-    case "noContact":
-      return `${would}${lower(`Put ${user(e.aId)} and ${user(e.bId)} under a no-contact order until ${ts(e.until, "f")}`)}.`;
-  }
+  const [did, would] = ((): [string, string] => {
+    switch (e.type) {
+      case "cooloff":
+        return [`Timed out ${user(e.userId)} for ${e.minutes} minutes`, `Would time out ${user(e.userId)} for ${e.minutes} minutes`];
+      case "warn":
+        return [`Warned ${user(e.userId)} by DM`, `Would warn ${user(e.userId)} by DM`];
+      case "timeout":
+        return [`Timed out ${user(e.userId)} for ${formatMinutes(e.minutes)}`, `Would time out ${user(e.userId)} for ${formatMinutes(e.minutes)}`];
+      case "kick":
+        return [`Kicked ${user(e.userId)}`, `Would kick ${user(e.userId)}`];
+      case "ban": {
+        const span = e.days === null ? " permanently" : ` for ${e.days} days`;
+        return [`Banned ${user(e.userId)}${span}`, `Would ban ${user(e.userId)}${span}`];
+      }
+      case "unban":
+        return [`Unbanned ${user(e.userId)}`, `Would unban ${user(e.userId)}`];
+      case "noContact":
+        return [`Put ${user(e.aId)} and ${user(e.bId)} under a no-contact order until ${ts(e.until, "f")}`, `Would put ${user(e.aId)} and ${user(e.bId)} under a no-contact order until ${ts(e.until, "f")}`];
+    }
+  })();
+  return `${shadow ? would : did}.`;
 }
 
 export function closedCard(c: CaseRecord, policy: Policy, tally: Tally, statements: StatementRecord[], effects: Effect[], notes: string[]) {
