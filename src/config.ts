@@ -7,7 +7,14 @@ const share = z.enum(["majority", "two-thirds", "three-quarters"]);
 const punishment = z.discriminatedUnion("type", [
   z.object({ type: z.literal("cooloff"), minutes: z.number().int().positive() }),
   z.object({ type: z.literal("warn") }),
-  z.object({ type: z.literal("timeout"), minutes: z.number().int().positive().max(28 * 24 * 60) }),
+  z.object({
+    type: z.literal("timeout"),
+    minutes: z
+      .number()
+      .int()
+      .positive()
+      .max(28 * 24 * 60),
+  }),
   z.object({ type: z.literal("kick") }),
   z.object({ type: z.literal("ban"), days: z.number().int().positive().nullable() }),
 ]);
@@ -19,7 +26,11 @@ const step = z.object({
   punishment,
   yes: z.number().int().min(1),
   share,
-  windowMinutes: z.number().int().min(1).max(32 * 24 * 60),
+  windowMinutes: z
+    .number()
+    .int()
+    .min(1)
+    .max(32 * 24 * 60),
   witnessYes: z.number().int().min(0),
   closeOnThreshold: z.boolean(),
   retryAfterFailMinutes: z.number().int().min(0),
@@ -61,7 +72,10 @@ export const configSchema = z.object({
   /** Record everything, act on nothing. Start here. */
   shadow: z.boolean().default(true),
   /** Short names for the server rules, shown as a menu when filing. */
-  rules: z.array(z.string().min(1).max(100)).max(25).default(["Be decent to each other", "No spam", "No slurs or harassment", "Keep it legal"]),
+  rules: z
+    .array(z.string().min(1).max(100))
+    .max(25)
+    .default(["Be decent to each other", "No spam", "No slurs or harassment", "Keep it legal"]),
   databasePath: z.string().default("data/tribunal.db"),
   /** Deep merged over the defaults in src/policy.ts. */
   policy: policySchema.partial().default({}),
@@ -73,9 +87,9 @@ export function parseConfig(raw: unknown, env: NodeJS.ProcessEnv = process.env):
   const parsed = configSchema.parse(raw);
   const policy: Policy = policySchema.parse({ ...DEFAULT_POLICY, ...parsed.policy });
   const stepIds = new Set([...policy.memberSteps, ...policy.newcomerSteps].map((s) => s.id));
-  if (!stepIds.has("cooloff")) throw new Error("policy needs a step with id \"cooloff\" on at least one track");
+  if (!stepIds.has("cooloff")) throw new Error('policy needs a step with id "cooloff" on at least one track');
   const token = env.DISCORD_TOKEN ?? parsed.token;
-  if (!token) throw new Error("set DISCORD_TOKEN in the environment or \"token\" in config.json");
+  if (!token) throw new Error('set DISCORD_TOKEN in the environment or "token" in config.json');
   return { ...parsed, token, policy };
 }
 

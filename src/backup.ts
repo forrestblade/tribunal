@@ -5,7 +5,9 @@ import { DatabaseSync, backup } from "node:sqlite";
 import { loadConfig } from "./config.js";
 
 const config = loadConfig();
-const dest = process.argv[2] ?? join(dirname(config.databasePath), "backups", `tribunal-${new Date().toISOString().slice(0, 10)}.db`);
+const dest =
+  process.argv[2] ??
+  join(dirname(config.databasePath), "backups", `tribunal-${new Date().toISOString().slice(0, 10)}.db`);
 mkdirSync(dirname(dest), { recursive: true });
 const db = new DatabaseSync(config.databasePath, { readOnly: true });
 await backup(db, dest);

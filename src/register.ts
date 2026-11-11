@@ -7,5 +7,7 @@ import { buildCommands } from "./discord/commands.js";
 const config = loadConfig();
 const rest = new REST().setToken(config.token);
 const body = buildCommands(config.policy, config.rules);
-const result = (await rest.put(Routes.applicationGuildCommands(config.applicationId, config.guildId), { body })) as { name: string }[];
+const result = (await rest.put(Routes.applicationGuildCommands(config.applicationId, config.guildId), { body })) as {
+  name: string;
+}[];
 console.log(`registered ${result.length} commands on guild ${config.guildId}: ${result.map((c) => c.name).join(", ")}`);

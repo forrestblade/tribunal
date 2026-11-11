@@ -7,10 +7,13 @@ export type CaseStatus = "open" | "passed" | "failed";
 export type Lane = "cooloff" | "regular" | "nocontact" | "appeal";
 export type VoteValue = "yes" | "no";
 
+/** A message copied at filing time, so deleting it later changes nothing. */
 export interface Evidence {
-  url: string | null;
+  channelId: string;
+  messageId: string;
+  url: string;
   authorId: string | null;
-  /** Copied when the case is filed, so deleting the message does not delete the evidence. */
+  /** null when the bot could not read it (no Message Content intent on an old message). */
   content: string | null;
   attachments: { name: string; url: string; size: number }[];
 }
@@ -45,12 +48,12 @@ export interface CaseRecord {
   shadow: boolean;
   /** For appeals: the case that imposed the ban. */
   appealOf: number | null;
+  /** Where the vote card lives. null until it has been posted. */
   channelId: string | null;
   messageId: string | null;
-  threadId: string | null;
 }
 
-export type NewCase = Omit<CaseRecord, "id" | "status" | "closedAt" | "channelId" | "messageId" | "threadId">;
+export type NewCase = Omit<CaseRecord, "id" | "status" | "closedAt" | "channelId" | "messageId">;
 
 export interface VoteRecord {
   caseId: number;
