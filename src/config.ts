@@ -67,7 +67,7 @@ export const configSchema = z.object({
   policy: policySchema.partial().default({}),
 });
 
-export type Config = Omit<z.infer<typeof configSchema>, "policy"> & { policy: Policy };
+export type Config = Omit<z.infer<typeof configSchema>, "policy" | "token"> & { policy: Policy; token: string };
 
 export function parseConfig(raw: unknown, env: NodeJS.ProcessEnv = process.env): Config {
   const parsed = configSchema.parse(raw);

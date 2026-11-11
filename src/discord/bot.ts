@@ -54,6 +54,8 @@ export class Bot {
   /** Reason text from "@bot @user words", waiting for the author to open the form. */
   private draftReasons = new Map<string, { authorId: string; reason: string; at: number }>();
   private lastNoContactNote = new Map<string, number>();
+  /** Evidence copied from a right-clicked message, keyed by channel:message, until its form is submitted. */
+  private evidenceCache = new Map<string, { evidence: Evidence; at: number }>();
   private lastPurge = 0;
 
   constructor(
@@ -140,7 +142,7 @@ export class Bot {
     if (this.ticking) return;
     this.ticking = true;
     try {
-      for (const s of this.engine.closeDue()) await this.finish(s);
+      for (const s of this.engine.closeDue()) await this.finish(s).catch((e) => log("finish error", e));
       for (const job of this.store.dueScheduled(this.now())) {
         if (!this.store.finishScheduled(job.id, this.now())) continue;
         if (job.kind === "unban") {
@@ -157,6 +159,7 @@ export class Bot {
         this.lastPurge = this.now();
       }
       for (const [k, v] of this.draftReasons) if (this.now() - v.at > 15 * MIN) this.draftReasons.delete(k);
+      for (const [k, v] of this.evidenceCache) if (this.now() - v.at > 15 * MIN) this.evidenceCache.delete(k);
     } catch (e) {
       log("tick error", e);
     } finally {
@@ -302,7 +305,7 @@ export class Bot {
       return this.file(i, a, {
         stepId: i.fields.getStringSelectValues("punishment")[0] ?? "",
         reason: i.fields.getTextInputValue("reason").trim(),
-        rule: i.fields.getStringSelectValues("rule")[0] ?? null,
+        rule: this.optionalSelect(i, "rule"),
         voice: where === "voice" ? true : where === "text" ? false : "auto",
         evidence,
       });
@@ -319,6 +322,7 @@ export class Bot {
     const steps = this.engine.allowedSteps(toMemberInfo(target));
     const chan = evidence?.url ? evidence.url.split("/").at(-2) ?? "-" : "-";
     const msg = evidence?.url ? evidence.url.split("/").at(-1) ?? "-" : "-";
+    if (evidence) this.evidenceCache.set(`${chan}:${msg}`, { evidence, at: this.now() });
     const inVoice = target.voice.channelId !== null;
     const modal = new ModalBuilder()
       .setCustomId(`file:${targetId}:${chan}:${msg}`)
@@ -357,6 +361,14 @@ export class Bot {
     return i.showModal(modal);
   }
 
+  private optionalSelect(i: ModalSubmitInteraction, id: string): string | null {
+    try {
+      return i.fields.getStringSelectValues(id)[0] ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   private async file(
     i: ChatInputCommandInteraction | ModalSubmitInteraction,
     targetId: string,
@@ -379,6 +391,11 @@ export class Bot {
   }
 
   private async evidenceFromIds(channelId: string, messageId: string): Promise<Evidence | null> {
+    const cached = this.evidenceCache.get(`${channelId}:${messageId}`);
+    if (cached) {
+      this.evidenceCache.delete(`${channelId}:${messageId}`);
+      return cached.evidence;
+    }
     try {
       const ch = await this.guild.channels.fetch(channelId);
       if (!ch || !ch.isTextBased()) return null;
@@ -413,8 +430,13 @@ export class Bot {
     const c = s.case;
     const notes: string[] = [];
     for (const e of s.effects) {
-      const r = await applyEffect(e, c, this.guild, this.store, this.config.policy, this.config.shadow, this.now);
-      notes.push(...r.notes);
+      try {
+        const r = await applyEffect(e, c, this.guild, this.store, this.config.policy, this.config.shadow, this.now);
+        notes.push(...r.notes);
+      } catch (err) {
+        log("effect error", err);
+        notes.push(`Could not apply ${e.type}: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
     const tally = this.engine.tally(c);
     const card = closedCard(c, this.config.policy, tally, this.store.statements(c.id), s.effects, notes);
