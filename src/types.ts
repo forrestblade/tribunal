@@ -89,7 +89,7 @@ export interface NoContactRecord {
   shadow: boolean;
 }
 
-export type ScheduledKind = "unban" | "unmute";
+export type ScheduledKind = "unban";
 
 export interface ScheduledRecord {
   id: number;
@@ -100,7 +100,7 @@ export interface ScheduledRecord {
 }
 
 /** Things that could not be done because the person was away; applied when they come back. */
-export type PendingKind = "timeout" | "unmute";
+export type PendingKind = "timeout";
 
 export interface PendingRecord {
   id: number;

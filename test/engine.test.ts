@@ -16,7 +16,6 @@ const member = (id: string, over: Partial<MemberInfo> = {}): MemberInfo => ({
   joinedAt: T0 - 100 * DAY,
   timedOutUntil: null,
   voiceChannelId: null,
-  serverMuted: false,
   ...over,
 });
 

@@ -20,7 +20,6 @@ export interface MemberInfo {
   joinedAt: number | null;
   timedOutUntil: number | null;
   voiceChannelId: string | null;
-  serverMuted: boolean;
 }
 
 export type Effect =
