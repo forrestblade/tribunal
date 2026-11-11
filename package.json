@@ -1,0 +1,31 @@
+{
+  "name": "tribunal",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A Discord bot that lets a small server moderate itself by vote: proposals, seconders' thresholds, voice witnesses, a punishment ladder, appeals and a trial-run mode.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Forrest Blade <mail@forrestblade.com>",
+  "repository": "github:forrestblade/tribunal",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node --disable-warning=ExperimentalWarning dist/index.js",
+    "register": "node --disable-warning=ExperimentalWarning dist/register.js",
+    "invite": "node dist/invite.js",
+    "backup": "node --disable-warning=ExperimentalWarning dist/backup.js",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "discord.js": "^14.28.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^6.0.3",
+    "vitest": "^5.1.0"
+  }
+}
