@@ -1,0 +1,12 @@
+[Unit]
+Description=Tribunal database backup
+
+[Service]
+Type=oneshot
+User=tribunal
+Group=tribunal
+WorkingDirectory=/opt/tribunal
+EnvironmentFile=/etc/tribunal/env
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning dist/backup.js
+# Keep two weeks of local snapshots. If BACKUP_BUCKET is set, copy the newest one to Cloud Storage.
+ExecStartPost=/bin/sh -c 'find /opt/tribunal/data/backups -name "*.db" -mtime +14 -delete; if [ -n "$BACKUP_BUCKET" ]; then gcloud storage cp "$(ls -t /opt/tribunal/data/backups/*.db | head -1)" "gs://$BACKUP_BUCKET/"; fi'

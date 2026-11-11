@@ -1,0 +1,26 @@
+# systemd unit for the tribunal bot. Installed by deploy/install.sh.
+[Unit]
+Description=Tribunal Discord bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tribunal
+Group=tribunal
+WorkingDirectory=/opt/tribunal
+EnvironmentFile=/etc/tribunal/env
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning dist/index.js
+Restart=always
+RestartSec=5
+# Hardening: the bot only needs its own data directory.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/tribunal/data
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

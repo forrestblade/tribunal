@@ -8,7 +8,7 @@
   "author": "Forrest Blade <mail@forrestblade.com>",
   "repository": "github:forrestblade/tribunal",
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=22.16.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
