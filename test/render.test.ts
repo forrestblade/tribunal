@@ -18,7 +18,14 @@ const caseOf = (over: Partial<CaseRecord> = {}): CaseRecord => ({
   rule: "No spam",
   reason: "posted the same link nine times",
   voice: false,
-  evidence: { url: "https://discord.com/channels/1/2/3", authorId: "T", content: "buy now", attachments: [{ name: "a.png", url: "https://cdn/a.png", size: 1 }] },
+  evidence: {
+    channelId: "2",
+    messageId: "3",
+    url: "https://discord.com/channels/1/2/3",
+    authorId: "T",
+    content: "buy now",
+    attachments: [{ name: "a.png", url: "https://cdn/a.png", size: 1 }],
+  },
   electorate: ["A", "B", "C", "D", "E", "F"],
   witnesses: [],
   requirement: { yes: 4, share: "two-thirds", witnessYes: 0, closeOnThreshold: false },
@@ -31,7 +38,6 @@ const caseOf = (over: Partial<CaseRecord> = {}): CaseRecord => ({
   appealOf: null,
   channelId: "2",
   messageId: "9",
-  threadId: null,
   ...over,
 });
 
@@ -45,7 +51,10 @@ const engineWith = (c: CaseRecord, votes: [string, "yes" | "no"][]) => {
 
 describe("openCard", () => {
   it("shows the case, hides the tally and offers Yes, No and Statement", () => {
-    const { engine, saved } = engineWith(caseOf(), [["A", "yes"], ["B", "no"]]);
+    const { engine, saved } = engineWith(caseOf(), [
+      ["A", "yes"],
+      ["B", "no"],
+    ]);
     const card = openCard(saved, P, engine.tally(saved), []);
     const embed = card.embeds[0]!.toJSON();
     expect(embed.title).toBe("Case #1: Timeout 1h");
@@ -57,21 +66,31 @@ describe("openCard", () => {
     expect(fields.Evidence).toContain("[a.png](https://cdn/a.png)");
     expect(JSON.stringify(embed)).not.toMatch(/1 yes|1 no/);
     const buttons = card.components[0]!.toJSON().components.map((b) => (b as { custom_id: string }).custom_id);
-    expect(buttons).toEqual(["vote:1:yes", "vote:1:no", "stmt:1"]);
+    expect(buttons).toEqual(["vote:1:yes", "vote:1:no", "statement:1"]);
   });
 
   it("marks trial runs and shows witness requirements and statements", () => {
-    const c = caseOf({ shadow: true, voice: true, witnesses: ["A", "B"], requirement: { yes: 4, share: "two-thirds", witnessYes: 2, closeOnThreshold: false } });
+    const c = caseOf({
+      shadow: true,
+      voice: true,
+      witnesses: ["A", "B"],
+      requirement: { yes: 4, share: "two-thirds", witnessYes: 2, closeOnThreshold: false },
+    });
     const { engine, saved } = engineWith(c, []);
-    const embed = openCard(saved, P, engine.tally(saved), [{ caseId: 1, userId: "T", text: "it was one link", at: now }]).embeds[0]!.toJSON();
+    const embed = openCard(saved, P, engine.tally(saved), [
+      { caseId: 1, userId: "T", text: "it was one link", at: now },
+    ]).embeds[0]!.toJSON();
     expect(embed.footer?.text).toContain("Trial run");
     const fields = Object.fromEntries(embed.fields!.map((f) => [f.name, f.value]));
     expect(fields.Needs).toContain("2 yes from people who were in voice");
-    expect(fields["Statement from the accused"]).toContain("it was one link");
+    expect(fields.Statement).toContain("it was one link");
   });
 
   it("has no statement button on appeals", () => {
-    const { engine, saved } = engineWith(caseOf({ kind: "appeal", stepId: null, track: null, appealOf: 3, rule: null, evidence: null }), []);
+    const { engine, saved } = engineWith(
+      caseOf({ kind: "appeal", stepId: null, track: null, appealOf: 3, rule: null, evidence: null }),
+      [],
+    );
     const card = openCard(saved, P, engine.tally(saved), []);
     expect(card.components[0]!.toJSON().components).toHaveLength(2);
     expect(card.embeds[0]!.toJSON().title).toBe("Case #1: Appeal");
@@ -80,18 +99,33 @@ describe("openCard", () => {
 
 describe("closedCard and logLine", () => {
   it("names every voter and says what was done", () => {
-    const { engine, store, saved } = engineWith(caseOf(), [["A", "yes"], ["B", "yes"], ["C", "yes"], ["D", "yes"], ["E", "no"]]);
+    const { engine, store, saved } = engineWith(caseOf(), [
+      ["A", "yes"],
+      ["B", "yes"],
+      ["C", "yes"],
+      ["D", "yes"],
+      ["E", "no"],
+    ]);
     store.closeCase(saved.id, "passed", now + 1);
     const closed = store.getCase(saved.id)!;
     const tally = engine.tally(closed);
-    const card = closedCard(closed, P, tally, [], [{ type: "timeout", userId: "T", minutes: 60 }], ["Could not DM them (DMs closed)."]);
+    const card = closedCard(
+      closed,
+      P,
+      tally,
+      [],
+      [{ type: "timeout", userId: "T", minutes: 60 }],
+      ["Could not DM them (DMs closed)."],
+    );
     const fields = Object.fromEntries(card.embeds[0]!.toJSON().fields!.map((f) => [f.name, f.value]));
     expect(fields.Result).toBe("Passed");
     expect(fields.Yes).toBe("<@A> <@B> <@C> <@D>");
     expect(fields.No).toBe("<@E>");
     expect(fields.Action).toBe("Timed out <@T> for 1h.\nCould not DM them (DMs closed).");
     expect(card.components).toEqual([]);
-    expect(logLine(closed, P, tally, [{ type: "timeout", userId: "T", minutes: 60 }], [])).toBe("Case #1: Timeout 1h passed 4-1. Timed out <@T> for 1h.");
+    expect(logLine(closed, P, tally, [{ type: "timeout", userId: "T", minutes: 60 }], [])).toBe(
+      "Case #1: Timeout 1h passed 4-1. Timed out <@T> for 1h.",
+    );
   });
 
   it("says would in trial runs", () => {
@@ -111,9 +145,27 @@ describe("helpText and commands", () => {
 
   it("builds the slash commands with every step as a choice", () => {
     const cmds = buildCommands(P, ["Be decent"]);
-    expect(cmds.map((c) => c.name)).toEqual(["case", "nocontact", "appeal", "record", "status", "help", "File a case", "File a case about this"]);
+    expect(cmds.map((c) => c.name)).toEqual([
+      "case",
+      "nocontact",
+      "appeal",
+      "record",
+      "status",
+      "help",
+      "File a case",
+      "File a case about this",
+    ]);
     const caseCmd = cmds[0] as { options: { name: string; choices?: { value: string }[] }[] };
     const punishment = caseCmd.options.find((o) => o.name === "punishment")!;
-    expect(punishment.choices!.map((c) => c.value)).toEqual(["cooloff", "warn", "timeout-1h", "timeout-24h", "timeout-7d", "ban-30d", "ban", "kick"]);
+    expect(punishment.choices!.map((c) => c.value)).toEqual([
+      "cooloff",
+      "warn",
+      "timeout-1h",
+      "timeout-24h",
+      "timeout-7d",
+      "ban-30d",
+      "ban",
+      "kick",
+    ]);
   });
 });

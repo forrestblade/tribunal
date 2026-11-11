@@ -1,7 +1,7 @@
-import type { Guild, GuildMember } from "discord.js";
-import { PermissionFlagsBits } from "discord.js";
+import { PermissionFlagsBits, type Guild, type GuildMember, type Message } from "discord.js";
 import type { MemberInfo } from "../engine/engine.js";
 import type { Store } from "../store.js";
+import type { Evidence } from "../types.js";
 
 export function toMemberInfo(m: GuildMember): MemberInfo {
   const me = m.guild.members.me;
@@ -17,8 +17,8 @@ export function toMemberInfo(m: GuildMember): MemberInfo {
   };
 }
 
-/** Everyone in the server right now, and note their join dates so rejoining does not reset membership. */
-export async function allMembers(guild: Guild, store: Store): Promise<MemberInfo[]> {
+/** Everyone in the server right now. Also notes join dates so rejoining does not reset membership. */
+export async function fetchMembers(guild: Guild, store: Store): Promise<MemberInfo[]> {
   const members = await guild.members.fetch();
   const infos: MemberInfo[] = [];
   store.tx(() => {
@@ -28,4 +28,15 @@ export async function allMembers(guild: Guild, store: Store): Promise<MemberInfo
     }
   });
   return infos;
+}
+
+export function evidenceFrom(m: Message): Evidence {
+  return {
+    channelId: m.channelId,
+    messageId: m.id,
+    url: m.url,
+    authorId: m.author.id,
+    content: m.content || null,
+    attachments: m.attachments.map((a) => ({ name: a.name, url: a.url, size: a.size })),
+  };
 }
